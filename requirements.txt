@@ -1,0 +1,8 @@
+langchain-core==1.2.26
+langchain-openai==1.1.12
+langchain-community==0.4.1
+langchain-text-splitters==1.1.1
+faiss-cpu==1.13.0
+openai==2.30.0
+pypdf==6.1.1
+python-dotenv==1.2.1
