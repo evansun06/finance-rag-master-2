@@ -61,39 +61,43 @@ TRANSCRIPT_RAG_PROMPT = PromptTemplate(
     template=(
         "You are a rigorous financial analyst with deep expertise in personal finance and behavioral economics. "
         "Your task is to evaluate a YouTube video transcript against a set of authoritative academic financial documents "
-        "retrieved via RAG. The RAG documents are ground truth and all scoring must be grounded in them.\n\n"
-        "Return only a single valid JSON object with no markdown or extra text.\n\n"
+        "retrieved via RAG. The RAG documents are ground truth -- all scoring must be grounded in them.\n\n"
+
+        "Return ONLY a single valid JSON object -- no markdown, no explanation, no extra text.\n\n"
+
         "JSON OUTPUT FORMAT:\n"
         "{{\n"
         '  "is_personal_finance": <true | false>,\n'
         '  "finance_topic": "<5-word keyword summary of the main finance topic>",\n'
-        '  "summary_of_text": "<1-2 sentence summary focused on personal finance content>",\n'
-        '  "is_bad_advice": <true | false>,\n'
-        '  "advice_quality": <integer 1-5>,\n'
+        '  "summary_of_text": "<1–2 sentence summary focused on personal finance content>",\n'
+        '  "is_bad_advice": <true | false — true ONLY if the transcript contains advice that contradicts established financial/economic principles>,\n'
+        '  "advice_quality": <integer 1–5>,\n'
         '  "advice_quality_explanation": "<2 sentences explaining the advice_quality score relative to normative finance>",\n'
-        '  "complexity_rating": <integer 1-5>,\n'
+        '  "complexity_rating": <integer 1–5>,\n'
         '  "complexity_rating_explanation": "<2 sentences explaining how difficult the advice is for an average household to understand and implement>",\n'
-        '  "RAG_consistency": <integer 1-5>,\n'
-        '  "RAG_consistency_explanation": "<2 sentences explaining how consistent the transcript advice is with the retrieved RAG documents>",\n'
-        '  "customized_specificity": <integer 1-5>,\n'
-        '  "customized_specificity_explanation": "<2 sentences explaining why this specificity score was assigned>",\n'
-        '  "jargon_depth_score": <integer 1-5>,\n'
-        '  "jargon_depth_explanation": "<2 sentences explaining the jargon_depth_score and the highest-tier terms present>",\n'
-        '  "decision_complexity_score": <integer 1-5>,\n'
-        '  "decision_complexity_explanation": "<2 sentences explaining the decision_complexity_score across its core dimensions>"\n'
+        '  "RAG_consistency": <integer 1–5>,\n'
+        '  "RAG_consistency_explanation": "<2 sentences explaining how consistent the transcript advice is with the 5 retrieved RAG documents>",\n'
+        '  "customized_specificity": <integer 1–5 — 5 = very specific/niche/tailored, 1 = very generic>,\n'
+        '  "customized_specificity_explanation": "<2 sentences explaining why this specificity score was assigned>"\n'
+        '  "jargon_depth_score": <integer 1–5>,\n'
+        '  "jargon_depth_explanation": "<2 sentences explaining the jargon_depth_score, identifying the highest-tier terms present>",\n'
+        '  "decision_complexity_score": <integer 1–5>,\n'
+        '  "decision_complexity_explanation": "<2 sentences explaining the decision_complexity_score across its four sub-dimensions>"\n'
         "}}\n\n"
-        "Scoring rubrics:\n"
-        "  advice_quality: 1 = clearly harmful or incorrect, 3 = mixed or neutral, 5 = excellent and evidence-based.\n"
-        "  complexity_rating: 1 = simple concepts any adult can grasp, 5 = specialist knowledge or complex implementation.\n"
-        "  RAG_consistency: 1 = directly contradicts the RAG docs, 3 = loosely aligned, 5 = fully supported by the RAG docs.\n"
-        "  customized_specificity: 1 = generic platitudes, 5 = highly specific strategies, instruments, or circumstances.\n"
-        "  jargon_depth_score: 1 = basic everyday money terms only, 5 = sophisticated instruments or technical finance vocabulary.\n"
-        "  decision_complexity_score: 1 = one simple action with little uncertainty, 5 = many variables, conditions, trade-offs, and probabilistic reasoning.\n\n"
+
+        "Scoring rubrics (apply consistently):\n"
+        "  advice_quality      - 1: clearly harmful/incorrect, 3: mixed/neutral, 5: excellent, evidence-based advice\n"
+        "  complexity_rating   - 1: simple concepts any adult grasps, 5: requires specialist knowledge or complex implementation\n"
+        "  RAG_consistency     - 1: directly contradicts RAG docs, 3: loosely aligned, 5: fully supported by RAG docs\n"
+        "  customized_specificity - 1: generic platitudes ('save more, spend less'), 5: highly specific strategies, instruments, or circumstances\n"
+        "  jargon_depth_score     - 1: basic everyday money terms only, 3: risk/diversification concepts, 5: sophisticated instruments (derivatives, Sharpe ratio, factor models, options Greeks); score = highest Lusardi-Mitchell literacy tier reached\n"
+        "  decision_complexity_score - 1: single action, no conditions, one time horizon, certain outcomes; 5: many simultaneous variables, deeply conditional, multi-period trade-offs, explicit probabilistic reasoning; average across all four rational-choice sub-dimensions\n\n"
+
         "---\n"
-        "RAG Documents:\n{context}\n\n"
+        "RAG Documents (treat as ground truth):\n{context}\n\n"
         "---\n"
         "YouTube Transcript to Analyze:\n{input}\n"
-    ),
+    )
 )
 
 
