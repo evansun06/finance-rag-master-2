@@ -6,10 +6,13 @@ Reproducible migration of the financial RAG analysis workflow onto a repo-local 
 
 - `finance-files/`: private PDF source corpus for retrieval; the repo keeps only a placeholder
 - `data/in/`: private transcript `.txt` inputs; the repo keeps only a placeholder
-- `data/out/odean_analysis_results.csv`: generated analysis output
+- `data/out/odean_analysis_results.csv`: generated output for the original per-video Odean analysis
+- `data/out/odean_matches_best_analysis_results.csv`: generated output for the 49 best-match videos
+- `data/out/odean_matches_worst_analysis_results.csv`: generated output for the 49 worst-match videos
 - `embeddings_index/`: generated FAISS index, rebuilt locally as needed
 - `utils/`: reusable helpers for embeddings, CSV handling, and JSON serialization
-- `scripts/odean_video_analysis.py`: the single executable analysis script
+- `scripts/odean_video_analysis.py`: executable script for the original per-video analysis
+- `scripts/odean_matches_analysis.py`: executable script for the matched best/worst video analyses
 
 ## Setup
 
@@ -35,27 +38,37 @@ The private research corpus and raw input files are not stored in this GitHub re
 
 ## Configure Inputs
 
-By default the script reads transcript files from:
+By default the data read from scripts/* should be inserted in `data/in/*`:
 
 ```text
 data/in/
 ```
 
-The analysis script expects local transcript `.txt` files in that directory. Override any path defaults in `.env` if needed. Shared repo paths live in `config.py`.
-Model choice, embedding model, retrieval `K`, and related runtime settings live as explicit constants in `scripts/Odean_video_analysis.py` so each script can own its own RAG behavior.
 
 ## Run
+Scripts for different analysis tasks are grouped into `scripts/*`
 
 ```bash
-python scripts/Odean_video_analysis.py
+python scripts/odean_video_analysis.py
+python scripts/odean_matches_analysis.py
 ```
 
 Optional flags:
 
 ```bash
-python scripts/Odean_video_analysis.py --rebuild-index
-python scripts/Odean_video_analysis.py --overwrite
+python scripts/odean_video_analysis.py --rebuild-index
+python scripts/odean_video_analysis.py --overwrite
+python scripts/odean_matches_analysis.py --rebuild-index
+python scripts/odean_matches_analysis.py --overwrite
 ```
+
+`odean_matches_analysis.py` reads:
+
+- `data/in/best_advice_match_per_odean.csv`
+- `data/in/worst_advice_match_per_odean.csv`
+- `data/in/google_sentence_panel_batch1_20260128.csv`
+
+It reconstructs transcripts from `b1_id` / `VideoID` and runs the same RAG pipeline used by `odean_video_analysis.py` on each of the 49 matched videos in each set.
 
 ## Notes
 
