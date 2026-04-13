@@ -44,11 +44,11 @@ ODEAN_INPUT_DIR = _path_from_env("ODEAN_INPUT_DIR", INPUT_DIR)
 ODEAN_OUTPUT_FILE = _path_from_env("ODEAN_OUTPUT_FILE", OUTPUT_DIR / "odean_analysis_results.csv")
 MATCHES_BEST_INPUT_FILE = _path_from_env(
     "MATCHES_BEST_INPUT_FILE",
-    INPUT_DIR / "best_advice_match_per_odean.csv",
+    INPUT_DIR / "best_advice_match_per_odean_screened.csv",
 )
 MATCHES_WORST_INPUT_FILE = _path_from_env(
     "MATCHES_WORST_INPUT_FILE",
-    INPUT_DIR / "worst_advice_match_per_odean.csv",
+    INPUT_DIR / "worst_advice_match_per_odean_screened.csv",
 )
 MATCHES_SENTENCE_PANEL_FILE = _path_from_env(
     "MATCHES_SENTENCE_PANEL_FILE",

@@ -4,6 +4,7 @@ from typing import Any
 
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from config import (
     EMBEDDINGS_INDEX_DIR,
@@ -11,7 +12,6 @@ from config import (
     LOGGER,
     OPENAI_API_KEY,
 )
-from utils.csv_utils import parse_llm_response
 from utils.embedder import build_retriever, ensure_vectorstore, index_exists
 
 
@@ -55,6 +55,76 @@ CSV_COLUMNS = [
     "decision_complexity_explanation",
 ]
 
+SCORE_FIELDS = (
+    "advice_quality",
+    "complexity_rating",
+    "RAG_consistency",
+    "customized_specificity",
+    "jargon_depth_score",
+    "decision_complexity_score",
+)
+
+EXPLANATION_FIELDS = (
+    "advice_quality_explanation",
+    "complexity_rating_explanation",
+    "RAG_consistency_explanation",
+    "customized_specificity_explanation",
+    "jargon_depth_explanation",
+    "decision_complexity_explanation",
+)
+
+
+class TranscriptAnalysisResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_personal_finance: bool
+    finance_topic: str
+    summary_of_text: str
+    is_bad_advice: bool
+    advice_quality: int
+    advice_quality_explanation: str
+    complexity_rating: int
+    complexity_rating_explanation: str
+    RAG_consistency: int
+    RAG_consistency_explanation: str
+    customized_specificity: int
+    customized_specificity_explanation: str
+    jargon_depth_score: int
+    jargon_depth_explanation: str
+    decision_complexity_score: int
+    decision_complexity_explanation: str
+
+    @field_validator(*SCORE_FIELDS)
+    @classmethod
+    def validate_score_range(cls, value: int) -> int:
+        if value < 1 or value > 5:
+            raise ValueError("All score fields must be integers from 1 to 5.")
+        return value
+
+    @field_validator("finance_topic", "summary_of_text", *EXPLANATION_FIELDS)
+    @classmethod
+    def strip_text_fields(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator(*EXPLANATION_FIELDS)
+    @classmethod
+    def require_explanations(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Explanation fields must not be blank.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_consistency(self) -> "TranscriptAnalysisResult":
+        if self.is_personal_finance:
+            if not self.finance_topic:
+                raise ValueError("finance_topic must be non-empty for personal finance transcripts.")
+            if not self.summary_of_text:
+                raise ValueError("summary_of_text must be non-empty for personal finance transcripts.")
+        elif self.is_bad_advice:
+            raise ValueError("Non-finance transcripts cannot be labeled as bad advice.")
+
+        return self
+
 
 TRANSCRIPT_RAG_PROMPT = PromptTemplate(
     input_variables=["context", "input"],
@@ -78,7 +148,7 @@ TRANSCRIPT_RAG_PROMPT = PromptTemplate(
         '  "RAG_consistency": <integer 1–5>,\n'
         '  "RAG_consistency_explanation": "<2 sentences explaining how consistent the transcript advice is with the 5 retrieved RAG documents>",\n'
         '  "customized_specificity": <integer 1–5 — 5 = very specific/niche/tailored, 1 = very generic>,\n'
-        '  "customized_specificity_explanation": "<2 sentences explaining why this specificity score was assigned>"\n'
+        '  "customized_specificity_explanation": "<2 sentences explaining why this specificity score was assigned>",\n'
         '  "jargon_depth_score": <integer 1–5>,\n'
         '  "jargon_depth_explanation": "<2 sentences explaining the jargon_depth_score, identifying the highest-tier terms present>",\n'
         '  "decision_complexity_score": <integer 1–5>,\n'
@@ -115,27 +185,14 @@ TRANSCRIPT_RAG_PROMPT_2 = PromptTemplate(
         "Score against what a careful, evidence-based financial educator should tell a typical household, not against "
         "the average quality of online finance content.\n\n"
 
-        "Return ONLY a single valid JSON object -- no markdown, no explanation, no extra text.\n\n"
+        "Populate every output field. Never use 0, null, or blank explanation fields.\n\n"
 
-        "JSON OUTPUT FORMAT:\n"
-        "{{\n"
-        '  "is_personal_finance": <true | false>,\n'
-        '  "finance_topic": "<5-word keyword summary of the main finance topic>",\n'
-        '  "summary_of_text": "<1–2 sentence summary focused on personal finance content>",\n'
-        '  "is_bad_advice": <true | false — true if the transcript gives advice that is materially misleading, recklessly overgeneralized, unsuitable without major caveats, or inconsistent with established personal finance principles or the RAG documents>,\n'
-        '  "advice_quality": <integer 1–5>,\n'
-        '  "advice_quality_explanation": "<2 sentences explaining the advice_quality score using at least two of: factual soundness, completeness, caveats/risk disclosure, suitability for a typical household, actionability, and consistency with RAG>",\n'
-        '  "complexity_rating": <integer 1–5>,\n'
-        '  "complexity_rating_explanation": "<2 sentences explaining how difficult the advice is for an average household to understand and implement>",\n'
-        '  "RAG_consistency": <integer 1–5>,\n'
-        '  "RAG_consistency_explanation": "<2 sentences explaining how consistent the transcript advice is with the 5 retrieved RAG documents>",\n'
-        '  "customized_specificity": <integer 1–5 — 5 = very specific/niche/tailored, 1 = very generic>,\n'
-        '  "customized_specificity_explanation": "<2 sentences explaining why this specificity score was assigned>",\n'
-        '  "jargon_depth_score": <integer 1–5>,\n'
-        '  "jargon_depth_explanation": "<2 sentences explaining the jargon_depth_score, identifying the highest-tier terms present>",\n'
-        '  "decision_complexity_score": <integer 1–5>,\n'
-        '  "decision_complexity_explanation": "<2 sentences explaining the decision_complexity_score across its four sub-dimensions>"\n'
-        "}}\n\n"
+        "If the transcript is not personal finance:\n"
+        "  - set is_personal_finance to false\n"
+        "  - set is_bad_advice to false\n"
+        "  - use an empty string for finance_topic and summary_of_text if there is no genuine finance content\n"
+        "  - still assign all six score fields an integer from 1 to 5\n"
+        "  - for non-finance transcripts, use 1 for each score and explicitly state that there is no personal finance advice to evaluate\n\n"
 
         "Scoring rubrics (apply consistently):\n"
         "  advice_quality - overall normative quality of the financial advice for a typical household, judged against established personal finance principles and the RAG documents.\n"
@@ -207,6 +264,26 @@ def stringify_message_content(message: Any) -> str:
     return str(content)
 
 
+def parse_structured_response(response: Any) -> dict[str, Any]:
+    if isinstance(response, dict) and {"parsed", "raw", "parsing_error"}.issubset(response):
+        parsing_error = response.get("parsing_error")
+        parsed = response.get("parsed")
+        if parsing_error is not None or parsed is None:
+            raw_preview = stringify_message_content(response.get("raw", ""))[:500]
+            if parsing_error is not None:
+                LOGGER.warning("Structured output parsing failed: %s", parsing_error)
+            if raw_preview:
+                LOGGER.warning("Structured output raw preview: %s", raw_preview)
+            return {}
+        response = parsed
+
+    if isinstance(response, BaseModel):
+        return response.model_dump()
+    if isinstance(response, dict):
+        return response
+    return {}
+
+
 def retrieve_context(retriever: Any, transcript_text: str) -> tuple[str, list[str]]:
     query = transcript_text[:RETRIEVAL_QUERY_CHARS]
     documents = retriever.invoke(query)
@@ -271,7 +348,12 @@ def prepare_analysis_resources(rebuild_index: bool) -> tuple[Any, Any]:
         temperature=TEMPERATURE,
         model_kwargs={"top_p": TOP_P},
     )
-    chain = TRANSCRIPT_RAG_PROMPT_2 | llm
+    structured_llm = llm.with_structured_output(
+        TranscriptAnalysisResult,
+        include_raw=True,
+        strict=True,
+    )
+    chain = TRANSCRIPT_RAG_PROMPT_2 | structured_llm
     return retriever, chain
 
 
@@ -287,13 +369,12 @@ def analyze_transcript(video_id: str, transcript_text: str, retriever: Any, chai
     truncated_text = transcript_text[:TRUNCATE_CHARS]
     try:
         response = chain.invoke({"context": context, "input": truncated_text})
-        response_text = stringify_message_content(response)
+        parsed = parse_structured_response(response)
     except Exception as exc:
         LOGGER.warning("LLM call failed for %s: %s", video_id, exc)
-        response_text = ""
+        parsed = {}
 
-    parsed = parse_llm_response(response_text)
     if not parsed:
-        LOGGER.warning("Invalid JSON response for %s. Writing a blank analysis row.", video_id)
+        LOGGER.warning("Invalid structured response for %s. Writing a blank analysis row.", video_id)
 
     return build_output_row(video_id, text_length, document_names, parsed)
