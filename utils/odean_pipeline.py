@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from langchain_core.prompts import PromptTemplate
@@ -26,6 +27,7 @@ EMBEDDING_MODEL = "text-embedding-ada-002"
 RETRIEVAL_K = 5
 RETRIEVAL_QUERY_CHARS = 3000
 TRUNCATE_CHARS = 100_000
+FALLBACK_PREVIEW_WORDS = 32
 
 EMBEDDING_CHUNK_SIZE = 800
 EMBEDDING_CHUNK_OVERLAP = 100
@@ -106,6 +108,13 @@ class TranscriptAnalysisResult(BaseModel):
     def strip_text_fields(cls, value: str) -> str:
         return value.strip()
 
+    @field_validator("finance_topic", "summary_of_text")
+    @classmethod
+    def require_core_text_fields(cls, value: str) -> str:
+        if not value:
+            raise ValueError("finance_topic and summary_of_text must not be blank.")
+        return value
+
     @field_validator(*EXPLANATION_FIELDS)
     @classmethod
     def require_explanations(cls, value: str) -> str:
@@ -115,12 +124,7 @@ class TranscriptAnalysisResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "TranscriptAnalysisResult":
-        if self.is_personal_finance:
-            if not self.finance_topic:
-                raise ValueError("finance_topic must be non-empty for personal finance transcripts.")
-            if not self.summary_of_text:
-                raise ValueError("summary_of_text must be non-empty for personal finance transcripts.")
-        elif self.is_bad_advice:
+        if not self.is_personal_finance and self.is_bad_advice:
             raise ValueError("Non-finance transcripts cannot be labeled as bad advice.")
 
         return self
@@ -240,6 +244,159 @@ TRANSCRIPT_RAG_PROMPT_2 = PromptTemplate(
     )
 )
 
+TRANSCRIPT_RAG_PROMPT_3 = PromptTemplate(
+    input_variables=["context", "input"],
+    template=(
+        "You are a rigorous financial analyst with deep expertise in personal finance and behavioral economics. "
+        "Your task is to evaluate a YouTube video transcript against a set of authoritative academic financial documents "
+        "retrieved via RAG. The RAG documents are ground truth -- all scoring must be grounded in them.\n\n"
+
+        "Evaluate conservatively and literally. Do not infer missing caveats, safeguards, nuance, suitability limits, "
+        "or risk warnings that the speaker did not actually state. If the advice is vague, overconfident, anecdotal, "
+        "incomplete, one-sided, impractical, or missing major risks, trade-offs, or applicability constraints, "
+        "lower the score.\n\n"
+
+        "Score against what a careful, evidence-based finance educator should say about general finance advice, not against "
+        "the average quality of online finance content.\n\n"
+
+        "Populate every output field. Never use 0, null, or blank explanation fields.\n\n"
+
+        "If the transcript is not personal finance:\n"
+        "  - set is_personal_finance to false\n"
+        "  - set is_bad_advice to false\n"
+        "  - still provide a non-empty finance_topic and summary_of_text describing what the transcript is actually about\n"
+        "  - still assign all six score fields an integer from 1 to 5\n"
+        "  - if the content is finance-related but not genuinely applicable as advice, you may use advice_quality = 1 and explain that it is informational, technical, exam-prep, theoretical, or otherwise not applicable as general finance advice\n"
+        "  - if the transcript is nonsensical, garbled, repetitive, or too corrupted to interpret reliably, set is_personal_finance to false, set is_bad_advice to false, provide a finance_topic and summary_of_text that explicitly say the transcript is incoherent/corrupted, and assign 1 to all six score fields with explanations that the content cannot be meaningfully evaluated\n\n"
+
+        "Scoring rubrics (apply consistently):\n"
+        "  advice_quality - overall normative quality of the finance advice in the transcript, judged against established financial principles and the RAG documents.\n"
+        "    1: materially harmful, reckless, false, strongly contradicted by RAG, nonsensical/incoherent, or not genuinely applicable as finance advice\n"
+        "    2: substantially weak; partially correct but misleading in effect because of overconfidence, one-sided framing, promotional tone, impracticality, or missing major caveats, trade-offs, or applicability constraints that materially affect the recommendation\n"
+        "    3: directionally sound or partly useful, but materially incomplete, generic, weakly justified, or reliable only under limited unstated conditions\n"
+        "    4: sound and useful finance guidance; broadly aligned with RAG and unlikely to mislead despite some missing nuance or minor caveats\n"
+        "    5: excellent general finance advice; clearly correct, evidence-based, strongly aligned with RAG, and genuinely decision-useful\n"
+        "    Important: do not withhold a 5 solely because the transcript is concise, introductory, non-technical, or not maximally tailored. A transcript can earn 5 when the core advice is mainstream, correct, and safely framed even if it does not cover every edge case or provide a complete individualized financial plan.\n"
+        "    Important: for standard evidence-based finance guidance such as budgeting, emergency funds, insurance, fee awareness, diversification, long-term index investing, credit hygiene, debt repayment, retirement saving, and basic risk management, a correct and safe presentation should usually land in the 4-5 range.\n"
+        "    Important: lower the score to 3 or below when missing caveats materially change the evaluation, or when the advice is hype-driven, cherry-picked, unrealistically certain, product-pushing, or one-size-fits-all in a misleading way. advice_quality measures the quality and applicability of the finance advice, not direct household benefit.\n"
+        "  complexity_rating - how difficult the content is for an average viewer to understand and implement.\n"
+        "    1: simple everyday concept or single basic action with minimal interpretation required\n"
+        "    2: somewhat simple; limited terminology or a few straightforward implementation steps\n"
+        "    3: moderate; requires some financial literacy, comparison, or multi-step execution\n"
+        "    4: fairly complex; several interacting concepts, calculations, or implementation constraints\n"
+        "    5: highly complex; specialist knowledge, technical judgment, or difficult execution for most viewers\n"
+        "  RAG_consistency - how well the transcript's advice matches the retrieved RAG documents.\n"
+        "    1: directly contradicted by RAG on important claims or recommendations\n"
+        "    2: materially in tension with RAG, or supported only by cherry-picked fragments while omitting major conflicts\n"
+        "    3: mixed or partial alignment; some overlap with RAG but also unsupported, overstated, or weakly grounded claims\n"
+        "    4: mostly aligned with RAG; minor gaps or overstatements, but the core advice matches the documents\n"
+        "    5: strongly and specifically supported by RAG; key claims, caveats, and recommendations clearly align\n"
+        "  customized_specificity - how tailored, detailed, and circumstance-specific the advice is.\n"
+        "    1: generic platitudes or broad slogans with little operational detail\n"
+        "    2: somewhat general; includes a few concrete points but remains broadly applicable and unspecific\n"
+        "    3: moderately specific; identifies a target situation, tactic, or conditional recommendation\n"
+        "    4: specific and tailored; includes meaningful constraints, examples, thresholds, or audience distinctions\n"
+        "    5: highly specific or niche; tightly tailored to particular instruments, audiences, conditions, or decision contexts\n"
+        "  jargon_depth_score - highest financial-literacy tier reached by the terminology actually used.\n"
+        "    1: basic everyday money terms only\n"
+        "    2: common personal finance terms such as credit score, emergency fund, APR, or index fund\n"
+        "    3: intermediate concepts such as diversification, duration, marginal tax rate, or sequence risk\n"
+        "    4: advanced technical language such as tax-loss harvesting, factor exposure, convexity, or Monte Carlo analysis\n"
+        "    5: sophisticated specialist terms such as derivatives, options Greeks, Sharpe ratio, or factor models\n"
+        "  decision_complexity_score - complexity of the decisions implied by the content, averaging across variables, conditionality, time horizon, and uncertainty.\n"
+        "    1: single action, no meaningful conditions, one time horizon, and mostly certain outcomes\n"
+        "    2: a small number of factors or mild trade-offs, but still mostly straightforward\n"
+        "    3: multiple relevant variables, some conditional decisions, or moderate multi-period trade-offs\n"
+        "    4: many interacting factors, substantial conditionality, and meaningful long-term uncertainty or sequencing\n"
+        "    5: deeply conditional, multi-stage decision-making with explicit probabilistic reasoning or complex cross-period trade-offs\n\n"
+
+        "---\n"
+        "RAG Documents (treat as ground truth):\n{context}\n\n"
+        "---\n"
+        "YouTube Transcript to Analyze:\n{input}\n"
+    )
+)
+
+TRANSCRIPT_RAG_PROMPT_4 = PromptTemplate(
+    input_variables=["context", "input"],
+    template=(
+        "You are a rigorous financial analyst with deep expertise in personal finance and behavioral economics. "
+        "Your task is to evaluate a YouTube video transcript against a set of authoritative academic financial documents "
+        "retrieved via RAG. The RAG documents are ground truth -- all scoring must be grounded in them.\n\n"
+
+        "Evaluate conservatively and literally. Do not infer missing caveats, safeguards, nuance, suitability limits, "
+        "or risk warnings that the speaker did not actually state. If the advice is vague, overconfident, anecdotal, "
+        "incomplete, one-sided, impractical, or missing major risks, trade-offs, or applicability constraints, "
+        "lower the score.\n\n"
+
+        "Use prompt-3 style calibration as the baseline: content that is sound, aligned with mainstream or accepted financial "
+        "principles, clear, practical or conceptually useful, and unlikely to mislead should usually land in the 4-5 range. "
+        "Do not judge quality primarily by household applicability; judge the quality of the finance reasoning, explanation, "
+        "and guidance itself.\n\n"
+
+        "Populate every output field. Never use 0, null, or blank explanation fields.\n\n"
+
+        "If the transcript is not personal finance:\n"
+        "  - set is_personal_finance to false\n"
+        "  - set is_bad_advice to false\n"
+        "  - still provide a non-empty finance_topic and summary_of_text describing what the transcript is actually about\n"
+        "  - still assign all six score fields an integer from 1 to 5\n"
+        "  - coherent finance education, technical explanation, mathematical demonstration, market analysis, or cautionary discussion should still be evaluated for correctness and usefulness within scope; do not default those to 1 merely because they are educational, descriptive, technical, or not broad household advice\n"
+        "  - reserve advice_quality = 1 for content that is genuinely non-finance, materially false, harmful, incoherent, corrupted, or otherwise devoid of meaningful finance insight\n"
+        "  - if the transcript is nonsensical, garbled, repetitive, or too corrupted to interpret reliably, set is_personal_finance to false, set is_bad_advice to false, provide a finance_topic and summary_of_text that explicitly say the transcript is incoherent/corrupted, and assign 1 to all six score fields with explanations that the content cannot be meaningfully evaluated\n\n"
+
+        "Scoring rubrics (apply consistently):\n"
+        "  advice_quality - overall quality of the finance advice, analysis, or reasoning in the transcript, judged against established financial principles and the RAG documents.\n"
+        "    1: materially harmful, reckless, false, strongly contradicted by RAG, genuinely non-finance, or nonsensical/incoherent\n"
+        "    2: substantially weak; partially correct but misleading in effect because of overconfidence, one-sided framing, promotional tone, impracticality, or missing major caveats, trade-offs, or applicability constraints that materially affect the recommendation\n"
+        "    3: directionally sound or partly useful, but materially incomplete, generic, weakly justified, or reliable only under limited unstated conditions\n"
+        "    4: high-quality finance guidance or analysis; accurate, useful, clear, and aligned with mainstream or accepted financial principles, with only limited missing nuance or caveats\n"
+        "    5: exceptional quality; clearly correct, rigorous, evidence-based, strongly aligned with RAG, and genuinely excellent as finance advice, explanation, or analysis\n"
+        "    Important: advice_quality is not a popularity or broad-applicability score. Correct technical, mathematical, theoretical, or advanced finance content should not be downgraded merely for being specialized or educational.\n"
+        "    Important: if the transcript presents correct financial mathematics, valuation logic, annuity or perpetuity reasoning, portfolio theory, risk-return analysis, optimization logic, or other quantitative finance reasoning accurately and responsibly, that usually merits a 5.\n"
+        "    Important: descriptive or educational content can still be excellent if it provides correct, useful, and non-misleading financial insight within its stated scope. Educational format alone is not a reason to lower the score.\n"
+        "    Important: complexity belongs in complexity_rating, not as a penalty to advice_quality. Lower the score only for actual inaccuracies, misleading framing, unsupported conclusions, overconfidence, or omitted assumptions/caveats that materially change the interpretation.\n"
+        "    Important: lower the score when the content is inaccurate, materially incomplete, overconfident, misleading, cherry-picked, or missing caveats that materially change the interpretation. A transcript should not receive 5 merely for sounding sophisticated.\n"
+        "  complexity_rating - how difficult the content is for an average viewer to understand and implement.\n"
+        "    1: simple everyday concept or single basic action with minimal interpretation required\n"
+        "    2: somewhat simple; limited terminology or a few straightforward implementation steps\n"
+        "    3: moderate; requires some financial literacy, comparison, or multi-step execution\n"
+        "    4: fairly complex; several interacting concepts, calculations, or implementation constraints\n"
+        "    5: highly complex; specialist knowledge, technical judgment, or difficult execution for most viewers\n"
+        "  RAG_consistency - how well the transcript's advice matches the retrieved RAG documents.\n"
+        "    1: directly contradicted by RAG on important claims or recommendations\n"
+        "    2: materially in tension with RAG, or supported only by cherry-picked fragments while omitting major conflicts\n"
+        "    3: mixed or partial alignment; some overlap with RAG but also unsupported, overstated, or weakly grounded claims\n"
+        "    4: mostly aligned with RAG; minor gaps or overstatements, but the core advice matches the documents\n"
+        "    5: strongly and specifically supported by RAG; key claims, caveats, and recommendations clearly align\n"
+        "  customized_specificity - how tailored, detailed, and circumstance-specific the advice is.\n"
+        "    1: generic platitudes or broad slogans with little operational detail\n"
+        "    2: somewhat general; includes a few concrete points but remains broadly applicable and unspecific\n"
+        "    3: moderately specific; identifies a target situation, tactic, or conditional recommendation\n"
+        "    4: specific and tailored; includes meaningful constraints, examples, thresholds, or audience distinctions\n"
+        "    5: highly specific or niche; tightly tailored to particular instruments, audiences, conditions, or decision contexts\n"
+        "  jargon_depth_score - highest financial-literacy tier reached by the terminology actually used.\n"
+        "    1: basic everyday money terms only\n"
+        "    2: common personal finance terms such as credit score, emergency fund, APR, or index fund\n"
+        "    3: intermediate concepts such as diversification, duration, marginal tax rate, or sequence risk\n"
+        "    4: advanced technical language such as tax-loss harvesting, factor exposure, convexity, or Monte Carlo analysis\n"
+        "    5: sophisticated specialist terms such as derivatives, options Greeks, Sharpe ratio, or factor models\n"
+        "  decision_complexity_score - complexity of the decisions implied by the content, averaging across variables, conditionality, time horizon, and uncertainty.\n"
+        "    1: single action, no meaningful conditions, one time horizon, and mostly certain outcomes\n"
+        "    2: a small number of factors or mild trade-offs, but still mostly straightforward\n"
+        "    3: multiple relevant variables, some conditional decisions, or moderate multi-period trade-offs\n"
+        "    4: many interacting factors, substantial conditionality, and meaningful long-term uncertainty or sequencing\n"
+        "    5: deeply conditional, multi-stage decision-making with explicit probabilistic reasoning or complex cross-period trade-offs\n\n"
+
+        "---\n"
+        "RAG Documents (treat as ground truth):\n{context}\n\n"
+        "---\n"
+        "YouTube Transcript to Analyze:\n{input}\n"
+    )
+)
+
+TRANSCRIPT_PROMPT_4 = TRANSCRIPT_RAG_PROMPT_4
+
 def require_base_configuration() -> None:
     if not OPENAI_API_KEY:
         raise RuntimeError(
@@ -302,6 +459,56 @@ def retrieve_context(retriever: Any, transcript_text: str) -> tuple[str, list[st
     return DOCUMENT_SEPARATOR.join(context_pieces), document_names
 
 
+def normalize_text_preview(text: str, max_words: int = FALLBACK_PREVIEW_WORDS) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return ""
+
+    words = cleaned.split(" ")
+    preview = " ".join(words[:max_words]).strip()
+    if len(words) > max_words:
+        preview += " ..."
+    return preview
+
+
+def build_fallback_parsed(transcript_text: str) -> dict[str, Any]:
+    preview = normalize_text_preview(transcript_text)
+
+    if not preview:
+        finance_topic = "Empty or unusable transcript"
+        summary = "The transcript text is empty or unusable, so the content could not be evaluated as finance advice."
+        explanation = "The transcript is empty or unusable, so it cannot be meaningfully evaluated as finance advice. A conservative fallback score of 1 was assigned to keep all fields populated."
+    else:
+        finance_topic = "Structured output fallback"
+        summary = (
+            "The transcript could not be converted into the required structured evaluation format. "
+            f"Transcript preview: {preview}"
+        )
+        explanation = (
+            "The model did not return a valid structured evaluation for this transcript, so a conservative fallback score of 1 was assigned. "
+            "This row is populated to avoid blank outputs and should be treated as a pipeline fallback rather than a trusted content judgment."
+        )
+
+    return {
+        "is_personal_finance": False,
+        "finance_topic": finance_topic,
+        "summary_of_text": summary,
+        "is_bad_advice": False,
+        "advice_quality": 1,
+        "advice_quality_explanation": explanation,
+        "complexity_rating": 1,
+        "complexity_rating_explanation": explanation,
+        "RAG_consistency": 1,
+        "RAG_consistency_explanation": explanation,
+        "customized_specificity": 1,
+        "customized_specificity_explanation": explanation,
+        "jargon_depth_score": 1,
+        "jargon_depth_explanation": explanation,
+        "decision_complexity_score": 1,
+        "decision_complexity_explanation": explanation,
+    }
+
+
 def build_output_row(video_id: str, text_length: int, document_names: list[str], parsed: dict[str, Any]) -> dict[str, Any]:
     return {
         "video_ID": video_id,
@@ -353,7 +560,7 @@ def prepare_analysis_resources(rebuild_index: bool) -> tuple[Any, Any]:
         include_raw=True,
         strict=True,
     )
-    chain = TRANSCRIPT_RAG_PROMPT_2 | structured_llm
+    chain = TRANSCRIPT_RAG_PROMPT_3 | structured_llm
     return retriever, chain
 
 
@@ -367,14 +574,22 @@ def analyze_transcript(video_id: str, transcript_text: str, retriever: Any, chai
         context, document_names = "", []
 
     truncated_text = transcript_text[:TRUNCATE_CHARS]
-    try:
-        response = chain.invoke({"context": context, "input": truncated_text})
-        parsed = parse_structured_response(response)
-    except Exception as exc:
-        LOGGER.warning("LLM call failed for %s: %s", video_id, exc)
-        parsed = {}
+    parsed: dict[str, Any] = {}
+    for attempt in range(1, 3):
+        try:
+            response = chain.invoke({"context": context, "input": truncated_text})
+            parsed = parse_structured_response(response)
+        except Exception as exc:
+            LOGGER.warning("LLM call failed for %s on attempt %s/2: %s", video_id, attempt, exc)
+            parsed = {}
+
+        if parsed:
+            break
+
+        LOGGER.warning("Structured response invalid for %s on attempt %s/2.", video_id, attempt)
 
     if not parsed:
-        LOGGER.warning("Invalid structured response for %s. Writing a blank analysis row.", video_id)
+        LOGGER.warning("Invalid structured response for %s. Writing a populated fallback analysis row.", video_id)
+        parsed = build_fallback_parsed(truncated_text)
 
     return build_output_row(video_id, text_length, document_names, parsed)

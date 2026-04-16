@@ -5,7 +5,7 @@ Reproducible migration of the financial RAG analysis workflow onto a repo-local 
 ## Layout
 
 - `finance-files/`: private PDF source corpus for retrieval; the repo keeps only a placeholder
-- `data/in/`: private transcript `.txt` inputs; the repo keeps only a placeholder
+- `data/in/`: private CSV transcript inputs; the repo keeps only a placeholder
 - `data/out/odean_analysis_results.csv`: generated output for the original per-video Odean analysis
 - `data/out/odean_matches_best_analysis_results.csv`: generated output for the 49 best-match videos
 - `data/out/odean_matches_worst_analysis_results.csv`: generated output for the 49 worst-match videos
@@ -33,7 +33,7 @@ Then set `OPENAI_API_KEY` in `.env`.
 The private research corpus and raw input files are not stored in this GitHub repo.
 
 - Acquire the `finance-files/` PDF corpus from Dr. Allen Hu.
-- Acquire the transcript input files for `data/in/` from Dr. Allen Hu.
+- Acquire the transcript CSV input files for `data/in/` from Dr. Allen Hu.
 - Keep those materials in private cloud storage or on a local synced drive, then place them into the repo-local paths or point the environment variables at their private locations.
 
 ## Configure Inputs
@@ -61,6 +61,13 @@ python scripts/odean_video_analysis.py --overwrite
 python scripts/odean_matches_analysis.py --rebuild-index
 python scripts/odean_matches_analysis.py --overwrite
 ```
+
+`odean_video_analysis.py` reads:
+
+- `data/in/content_odean.csv`
+- `data/in/word_panel_odean.csv`
+
+It takes the 49 `id` values from `content_odean.csv`, reconstructs each transcript by concatenating the word-level `Text` rows from `word_panel_odean.csv`, and runs the shared RAG pipeline on each video.
 
 `odean_matches_analysis.py` reads:
 
