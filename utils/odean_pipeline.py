@@ -5,7 +5,7 @@ from typing import Any
 
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from config import (
     EMBEDDINGS_INDEX_DIR,
@@ -121,14 +121,6 @@ class TranscriptAnalysisResult(BaseModel):
         if not value:
             raise ValueError("Explanation fields must not be blank.")
         return value
-
-    @model_validator(mode="after")
-    def validate_consistency(self) -> "TranscriptAnalysisResult":
-        if not self.is_personal_finance and self.is_bad_advice:
-            raise ValueError("Non-finance transcripts cannot be labeled as bad advice.")
-
-        return self
-
 
 TRANSCRIPT_RAG_PROMPT = PromptTemplate(
     input_variables=["context", "input"],

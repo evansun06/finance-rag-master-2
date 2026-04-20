@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -64,8 +65,19 @@ def write_rows(
     sort_key: str,
 ) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        newline="",
+        dir=csv_path.parent,
+        prefix=f".{csv_path.stem}.",
+        suffix=csv_path.suffix,
+        delete=False,
+    ) as handle:
         writer = csv.DictWriter(handle, fieldnames=list(fieldnames), extrasaction="ignore")
         writer.writeheader()
         for row in sorted(rows.values(), key=lambda item: str(item.get(sort_key, ""))):
             writer.writerow(row)
+        temp_path = Path(handle.name)
+
+    temp_path.replace(csv_path)
