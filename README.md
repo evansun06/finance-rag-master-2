@@ -77,9 +77,77 @@ It takes the 49 `id` values from `content_odean.csv`, reconstructs each transcri
 
 It reconstructs transcripts from `b1_id` / `VideoID` and runs the same RAG pipeline used by `odean_video_analysis.py` on each of the 49 matched videos in each set.
 
+## Run Prompt 6 Segment Batch Analysis
+
+The segment batch runner applies the same `RAG_PROMPT_6` pipeline used by `scripts/prompt6_batch_analysis.py`, but runs one OpenAI Batch request per `(VideoID, segment_no)` row from:
+
+```text
+data/in/speakerseg_batch1_20260121.csv
+```
+
+Segments with fewer than 10 words are not sent to OpenAI. They are written directly to the output CSV with `video_ID`, `segment_no`, and `text_length` preserved and all analysis/RAG fields left blank.
+
+Default output and state paths:
+
+```text
+data/out/prompt-6/speakerseg_batch1_20260121_segment_analysis_results.csv
+data/out/prompt-6/speakerseg_batch1_20260121_segment_batch_state/
+```
+
+Check local status without calling the OpenAI API:
+
+```bash
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py status
+```
+
+Submit missing segments as OpenAI Batch jobs:
+
+```bash
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py submit
+```
+
+Poll jobs once and merge completed outputs:
+
+```bash
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py poll
+```
+
+Keep polling until all tracked jobs are terminal:
+
+```bash
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py poll --watch
+```
+
+Submit missing segments and then poll in one command:
+
+```bash
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py run --watch
+```
+
+Useful options:
+
+```bash
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py submit --limit 1000
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py submit --embedding-batch-size 256
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py submit --rebuild-index
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py submit --overwrite
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py submit --retry-errors
+```
+
+The runner defaults to 1,000 requests per OpenAI Batch job and 256 segment queries per synchronous embeddings HTTP request while preparing RAG context. It maintains local manifests, request JSONL files, downloaded output/error JSONL files, and merge status in the state directory, so rerunning `submit`, `poll`, or `run --watch` is intended to resume safely from existing state.
+
+If Batch API line items fail after polling, retry only those failed segment requests with:
+
+```bash
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py submit --retry-errors
+./.venv/bin/python scripts/prompt6_segment_batch_analysis.py poll --watch
+```
+
+`--retry-errors` scans downloaded `batch-*.error.jsonl` files, excludes segments that already have a later successful output or are already in an active batch, and creates new retry batches at the next local batch number. Historical error files are kept for audit; successful retry merges overwrite the existing fallback rows in the final CSV.
+
 ## Notes
 
 - `finance-files/` and `data/in/` are intentionally left empty in git except for placeholder files; request the private materials from Dr. Allen Hu.
 - `embeddings_index/` is treated as a derived artifact and is intentionally ignored by git.
 - If no local FAISS index exists, the script will build one from `finance-files/` before analyzing transcripts.
-- The script resumes from the existing CSV by `video_ID` unless `--overwrite` is provided.
+- The script resumes from the existing CSV by `video_ID` and `segment_no` unless `--overwrite` is provided.
