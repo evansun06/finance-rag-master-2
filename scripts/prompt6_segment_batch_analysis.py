@@ -60,6 +60,16 @@ RETRYABLE_ERROR_CODES = {
     "service_unavailable",
     "timeout",
 }
+NON_ANALYSIS_RESULT_COLUMNS = {"video_ID", "video_id", "segment_no", "text_length"}
+FALLBACK_FINANCE_TOPICS = {
+    "empty or unusable transcript",
+    "structured output fallback",
+}
+FALLBACK_RESULT_MARKERS = (
+    "could not be converted into the required structured evaluation format",
+    "conservative fallback score",
+    "pipeline fallback rather than a trusted content judgment",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -313,6 +323,29 @@ def load_existing_segment_results(csv_path: Path) -> dict[str, dict[str, str]]:
             if video_id and segment_no:
                 rows[build_segment_key(video_id, segment_no)] = row
     return rows
+
+
+def segment_result_has_analysis_values(row: dict[str, str]) -> bool:
+    return any(
+        str(value or "").strip()
+        for column, value in row.items()
+        if column not in NON_ANALYSIS_RESULT_COLUMNS
+    )
+
+
+def is_segment_result_fallback(row: dict[str, str]) -> bool:
+    finance_topic = str(row.get("finance_topic") or "").strip().lower()
+    if finance_topic in FALLBACK_FINANCE_TOPICS:
+        return True
+
+    searchable_text = " ".join(str(value or "") for value in row.values()).lower()
+    return any(marker in searchable_text for marker in FALLBACK_RESULT_MARKERS)
+
+
+def is_real_llm_segment_result(row: dict[str, str] | None) -> bool:
+    if not row:
+        return False
+    return segment_result_has_analysis_values(row) and not is_segment_result_fallback(row)
 
 
 def chunk_rows(rows: list[dict[str, str]], size: int) -> list[list[dict[str, str]]]:
@@ -742,14 +775,33 @@ def collect_retry_error_segment_keys(
 def select_retry_error_rows(
     prepared_rows: list[dict[str, str]],
     state_dir: Path,
+    output_csv: Path,
     batch_states: list[dict[str, Any]],
     limit: int | None,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]], dict[str, Any]]:
     retry_segment_keys, summary = collect_retry_error_segment_keys(state_dir, batch_states)
     prepared_keys = {row["segment_key"] for row in prepared_rows}
     unknown_retry_keys = retry_segment_keys - prepared_keys
+    existing_results = load_existing_segment_results(output_csv)
 
-    retry_rows = [row for row in prepared_rows if row["segment_key"] in retry_segment_keys]
+    csv_real_result_keys: set[str] = set()
+    csv_fallback_keys: set[str] = set()
+    csv_blank_result_keys: set[str] = set()
+    csv_missing_result_keys: set[str] = set()
+    for segment_key in retry_segment_keys:
+        row = existing_results.get(segment_key)
+        if is_real_llm_segment_result(row):
+            csv_real_result_keys.add(segment_key)
+        elif row is None:
+            csv_missing_result_keys.add(segment_key)
+        elif segment_result_has_analysis_values(row):
+            csv_fallback_keys.add(segment_key)
+        else:
+            csv_blank_result_keys.add(segment_key)
+
+    eligible_retry_segment_keys = retry_segment_keys - csv_real_result_keys
+
+    retry_rows = [row for row in prepared_rows if row["segment_key"] in eligible_retry_segment_keys]
     if limit is not None:
         retry_rows = retry_rows[:limit]
 
@@ -764,6 +816,10 @@ def select_retry_error_rows(
         if meets_segment_analysis_threshold(row["transcript_text"])
     ]
     summary["unknown_retry_key_count"] = len(unknown_retry_keys)
+    summary["csv_real_result_excluded_count"] = len(csv_real_result_keys)
+    summary["csv_missing_result_retry_count"] = len(csv_missing_result_keys)
+    summary["csv_fallback_result_retry_count"] = len(csv_fallback_keys)
+    summary["csv_blank_result_retry_count"] = len(csv_blank_result_keys)
     summary["selected_retry_row_count"] = len(retry_rows)
     summary["selected_retry_analysis_count"] = len(pending_analysis_rows)
     summary["selected_retry_short_count"] = len(short_rows)
@@ -1191,6 +1247,7 @@ def submit_batches(args: argparse.Namespace) -> None:
         pending_analysis_rows, short_rows, retry_summary = select_retry_error_rows(
             prepared_rows=prepared_rows,
             state_dir=args.state_dir,
+            output_csv=args.output_csv,
             batch_states=batch_states,
             limit=args.limit,
         )
@@ -1202,13 +1259,18 @@ def submit_batches(args: argparse.Namespace) -> None:
         }
         LOGGER.info(
             "Retry scan found %s latest retryable segments from %s retryable error rows in %s error files "
-            "(%s successful output rows observed, %s active/unmerged segments excluded, %s unknown keys skipped).",
+            "(%s successful output rows observed, %s active/unmerged segments excluded, %s unknown keys skipped, "
+            "%s real CSV result rows excluded, retrying %s missing CSV rows, %s fallback CSV rows, %s blank CSV rows).",
             retry_summary["latest_retryable_segment_count"],
             retry_summary["retryable_error_rows"],
             retry_summary["retry_source_file_count"],
             retry_summary["successful_output_rows"],
             retry_summary["unmerged_segment_count"],
             retry_summary["unknown_retry_key_count"],
+            retry_summary["csv_real_result_excluded_count"],
+            retry_summary["csv_missing_result_retry_count"],
+            retry_summary["csv_fallback_result_retry_count"],
+            retry_summary["csv_blank_result_retry_count"],
         )
     else:
         existing_results = {} if args.overwrite else load_existing_segment_results(args.output_csv)

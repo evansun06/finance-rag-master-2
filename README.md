@@ -143,7 +143,7 @@ If Batch API line items fail after polling, retry only those failed segment requ
 ./.venv/bin/python scripts/prompt6_segment_batch_analysis.py poll --watch
 ```
 
-`--retry-errors` scans downloaded `batch-*.error.jsonl` files, excludes segments that already have a later successful output or are already in an active batch, and creates new retry batches at the next local batch number. Historical error files are kept for audit; successful retry merges overwrite the existing fallback rows in the final CSV.
+`--retry-errors` scans downloaded `batch-*.error.jsonl` files, excludes segments that already have a later successful output, are already in an active batch, or already have a real non-fallback analysis row in the final CSV, and creates new retry batches at the next local batch number. Historical error files are kept for audit; successful retry merges overwrite missing/fallback rows in the final CSV.
 
 ## Notes
 
